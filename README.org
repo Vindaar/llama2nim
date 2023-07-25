@@ -1,0 +1,33 @@
+* llama2nim
+
+This is a simple port of Andrej Karpathy's llama2.c:
+
+https://github.com/karpathy/llama2.c
+
+The idea is to keep the no dependency idea alive. However, I use
+~cligen~ for argument parsing and because it's available its
+memfile interface (the latter could be replace by ~std/memfiles~, but
+initially I thought about using more features)
+
+Example compile: (see README of the original for more details)
+#+begin_src sh
+nim c -d:danger llama2nim.nim
+#+end_src
+
+It needs a checkpoint file, see the README of the original.
+
+Just run the program with
+#+begin_src sh
+./llama2nim -c <path to checkpoint>
+#+end_src
+and you can adjust the number of steps as well as the temperature.
+
+** Why?
+
+Because I thought it would be a fun thing to do during a train ride &
+waiting at the airport. :)
+
+** Implementation differences
+
+I wrap the raw pointers in a ~Buf[T]~ object for slightly saner
+handling of the data incl. freeing of the memory.
