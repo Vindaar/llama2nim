@@ -349,23 +349,37 @@ proc argmax[T](v: Buf[T], n: int): int =
       max_p = v[i]
   result = max_i
 
-# ----------------------------------------------------------------------------
+proc readVocab(cfg: Config): seq[string] =
+  ## Parses the vocabulary file
+  result = newSeq[string](cfg.vocab_size)
+  var mft = mopen("tokenizer.bin")
+  if mft.mem == nil:
+    raise newException(IOError, "Unable to open the tokenizer file tokenizer.bin! Run " &
+      "python tokenizer.py to convert tokenizer.model -> tokenizer.bin")
+  proc readWord(mf: MFile, pos: var int): string =
+    ## Reads the (len, cstring) pairs and returns the data in a string.
+    ## `pos` is advanced by the necessary bytes
+    var l: int32
+    # copy the size of the word
+    copyMem(l.addr, mft.mem %!+ pos, sizeof(int32))
+    inc pos, sizeof(int32)
+    result = newString(l)
+    # copy the content
+    copyMem(result.getPtr, mf.mem %!+ pos, sizeof(char) * l)
+    inc pos, l
+  var pos = 0
+  for i in 0 ..< cfg.vocab_size:
+    let wd = readWord(mft, pos)
+    result[i] = wd
+  mft.close()
 
-proc main(checkpoint: string,
-          temperature = 0.9'f32, steps = 256): int =
-  # seed rng with time. if you want deterministic behavior use temperature 0.0
-  var rnd = initRand(now().toTime.toUnix)
-
-  # read in the model.bin file
+proc parseConfigWeights(mf: MFile, file: string): (Config, TransformerWeights) =
   var
     config: Config
     weights: TransformerWeights
-    #data: ptr UncheckedArray[float32] = nil
-    file_size = 0
-  let mf = mopen(checkpoint)
   block DataRead:
     if mf.mem == nil:
-      raise newException(IOError, "Unable to open the checkpoint file " & $checkpoint)
+      raise newException(IOError, "Unable to open the checkpoint file " & $file)
     # read in the config header
     copyMem(config.addr, mf.mem, sizeof(Config))
     echo "Read config: ", config
@@ -374,43 +388,28 @@ proc main(checkpoint: string,
     config.vocab_size = abs(config.vocab_size)
     # memory map the Transformer weights into the data pointer
     var weights_ptr = cast[ptr float32](mf.mem %!+ sizeof(Config)) #  div sizeof(float32)))
-    ## XXX: fix me!
-    echo "Start parsing weights"
     checkpoint_init_weights(weights, config, weights_ptr, shared_weights)
+  result = (config, weights)
+
+# ----------------------------------------------------------------------------
+
+proc main(checkpoint: string,
+          temperature = 0.9'f32, steps = 256): int =
+  # seed rng with time. if you want deterministic behavior use temperature 0.0
+  var rnd = initRand(now().toTime.toUnix)
+
+  # read in the model.bin file
+  let mf = mopen(checkpoint)
+  let (config, weights) = parseConfigWeights(mf, checkpoint)
 
   # right now we cannot run for more than config.seq_len steps
-  echo "model initialized"
+  echo "Model initialized"
   var steps = steps
   if steps <= 0 or steps > config.seq_len:
     steps = config.seq_len
 
   # read in the tokenizer.bin file
-  #char** vocab = (char**)malloc(config.vocab_size * sizeof(char*))
-  var vocab = newSeq[string](config.vocab_size)
-  block ReadVocab:
-    var mft = mopen("tokenizer.bin")
-    if mft.mem == nil:
-      raise newException(IOError, "Unable to open the tokenizer file tokenizer.bin! Run " &
-        "python tokenizer.py to convert tokenizer.model -> tokenizer.bin")
-    proc readWord(mf: MFile, pos: var int): string =
-      ## Reads the (len, cstring) pairs and returns the data in a string.
-      ## `pos` is advanced by the necessary bytes
-      var l: int32
-      # copy the size of the word
-      copyMem(l.addr, mft.mem %!+ pos, sizeof(int32))
-      inc pos, sizeof(int32)
-      result = newString(l)
-      # copy the content
-      copyMem(result.getPtr, mf.mem %!+ pos, sizeof(char) * l)
-      inc pos, l
-    var pos = 0
-    for i in 0 ..< config.vocab_size:
-      #echo "Reading word i ", i, " at pos = ", pos
-      let wd = readWord(mft, pos)
-      #echo "read = ", wd
-
-      vocab[i] = wd
-    mft.close()
+  let vocab = readVocab(config)
 
   # create and init the application RunState
   var state = initRunState(config)
@@ -448,8 +447,6 @@ proc main(checkpoint: string,
 
   # report achieved tok/s
   let stop = getMonoTime()
-  echo stop - start
-  echo "for : ", config.seq_len.float
   echo "achieved tok/s: ", config.seq_len.float / ((stop-start).inMicroSeconds().float / 1e6)
 
   mf.close()
